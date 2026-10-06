@@ -7,7 +7,8 @@ import type { Locator } from "playwright";
 import { expect, it } from "vitest";
 import { appendTranscriptMessage } from "../../../src/config/sessions/session-accessor.js";
 import { saveMediaBuffer } from "../../../src/media/store.js";
-import { ensureGatewayOwnerProfile, setAvatar } from "../../../src/state/user-profiles.js";
+import { setAvatar } from "../../../src/state/user-profile-writes.worker.js";
+import { ensureGatewayOwnerProfile } from "../../../src/state/user-profiles.js";
 import { withEnvAsync } from "../../../src/test-utils/env.js";
 import {
   createOpenClawTestInstance,
@@ -273,13 +274,14 @@ suite.define(() => {
           .locator(".chat-assistant-attachment-card")
           .filter({ hasText: filename });
         const downloadFile = async (link: Locator) => {
+          // Focus keeps the action exposed while reloaded images move the card.
+          await link.focus();
           const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
           const downloadedPath = await download.path();
           expect(downloadedPath).not.toBeNull();
           expect(await readFile(downloadedPath!)).toEqual(bytes);
           expect(download.suggestedFilename()).toBe(filename);
         };
-        await fileCard.hover();
         await downloadFile(
           fileCard.getByRole("link", { name: `Download ${filename}`, exact: true }),
         );
