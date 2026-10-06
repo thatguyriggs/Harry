@@ -917,10 +917,15 @@ export async function loadWorkspaceBootstrapFiles(
   for (const entry of entries) {
     if (
       !access &&
-      (entry.name === DEFAULT_MEMORY_FILENAME || entry.name === DEFAULT_USER_FILENAME) &&
-      !(await exactWorkspaceEntryExists(resolvedDir, entry.name))
+      (entry.name === DEFAULT_MEMORY_FILENAME || entry.name === DEFAULT_USER_FILENAME)
     ) {
-      continue;
+      try {
+        if (!(await exactWorkspaceEntryExists(resolvedDir, entry.name))) {
+          continue;
+        }
+      } catch {
+        // The guarded read can retain readable content or report this entry unreadable.
+      }
     }
     const loaded = await readWorkspaceFileWithGuards({
       filePath: entry.filePath,
