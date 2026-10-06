@@ -1,5 +1,4 @@
 import { createServer } from "node:http";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
 import { createDeferred } from "../../test/helpers/promise.js";
@@ -39,7 +38,6 @@ it(
     const firstGate = createDeferred();
     const finalGate = createDeferred();
     const finalReached = createDeferred();
-    const queuedRunTerminal = createDeferred<unknown>();
     let firstReceived = false;
     let followupReceived = false;
     const tasks = new Set<Promise<void>>();
@@ -140,17 +138,6 @@ it(
         cfg,
         configPath: state.configPath,
         token,
-        onEvent: ({ event, payload }) => {
-          if (
-            event === "chat" &&
-            isRecord(payload) &&
-            payload.sessionKey === sessionKey &&
-            payload.runId === "rpc-queued" &&
-            (payload.state === "final" || payload.state === "error" || payload.state === "aborted")
-          ) {
-            queuedRunTerminal.resolve(payload);
-          }
-        },
       });
       startupSpy.mockRestore();
       await gateway.server.startupSettled;
@@ -167,9 +154,10 @@ it(
         idempotencyKey: "rpc-queued",
         queueMode: "followup",
       });
-      // chat.send acknowledges before dispatch reaches queue admission. Its source
-      // run terminalizes after handoff, while the held first reply keeps it queued.
-      await expect(queuedRunTerminal.promise).resolves.toMatchObject({ state: "final" });
+      // Queue admission follows the ACK and keeps the source pending until delivery.
+      await expect(
+        gateway.client.request("agent.wait", { runId: "rpc-queued", timeoutMs: 30_000 }),
+      ).resolves.toMatchObject({ runId: "rpc-queued", status: "pending", timeoutPhase: "queue" });
       expect(context?.chatQueuedTurns.has("rpc-queued")).toBe(true);
       firstGate.resolve();
       await finalReached.promise;
