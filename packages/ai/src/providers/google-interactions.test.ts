@@ -380,6 +380,7 @@ describe("google-interactions provider", () => {
       cacheRead: 40,
       totalTokens: 155,
       cacheTelemetry: { state: "available" },
+      contextUsage: { state: "available", promptTokens: 105, totalTokens: 155 },
       cost: {
         input: 0.000065,
         output: 0.0001,
@@ -387,6 +388,27 @@ describe("google-interactions provider", () => {
         total: 0.000175,
       },
     });
+  });
+
+  it("keeps context usage unavailable when completion usage has a negative count", async () => {
+    mockSse(
+      new TextEncoder().encode(
+        completedSse({
+          usage: {
+            total_input_tokens: 41000,
+            total_output_tokens: 12,
+            total_tool_use_tokens: -40000,
+            total_tokens: 1012,
+          },
+        }) + "data: [DONE]\n\n",
+      ),
+    );
+
+    const result = await streamGoogleInteractions(makeInteractionsModel(), basicContext, {
+      apiKey: "test-api-key",
+    }).result();
+
+    expect(result.usage.contextUsage).toEqual({ state: "unavailable" });
   });
 
   it.each([
