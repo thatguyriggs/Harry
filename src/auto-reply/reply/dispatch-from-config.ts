@@ -9,7 +9,6 @@ import { chooseDispatchRoute } from "./dispatch-from-config.choose-route.js";
 import { executeDispatch } from "./dispatch-from-config.execute.js";
 import { finalizeDispatchAndAudit } from "./dispatch-from-config.finalize.js";
 import { gatherDispatchRequest } from "./dispatch-from-config.gather.js";
-import { DispatchSessionRefreshRequiredError } from "./dispatch-from-config.lifecycle.js";
 import { prepareDispatchOperationContext } from "./dispatch-from-config.prepare-context.js";
 import { prepareDispatchDelivery } from "./dispatch-from-config.prepare-delivery.js";
 import { prepareDispatchExecution } from "./dispatch-from-config.prepare-execution.js";
@@ -18,9 +17,9 @@ import type {
   DispatchFromConfigParams,
   DispatchFromConfigResult,
 } from "./dispatch-from-config.types.js";
+import { DispatchSessionRefreshRequiredError } from "./dispatch-session-refresh-error.js";
 import { REPLY_ADMISSION_TICKET, reserveReplyAdmissionTicket } from "./reply-admission-ticket.js";
 import { sendReplyRestartRecoveryNotice } from "./reply-turn-recovery-notice.js";
-import "./dispatch-from-config.events.js";
 
 export type { DispatchFromConfigResult } from "./dispatch-from-config.types.js";
 
@@ -43,10 +42,11 @@ async function dispatchReplyFromConfigWithQueuePolicy(
   params: DispatchFromConfigParams,
   allowActiveQueueResolution: boolean,
 ): Promise<DispatchFromConfigResult> {
-  const ticket = reserveReplyAdmissionTicket([
-    params.ctx.SessionKey,
-    params.ctx.CommandTargetSessionKey,
-  ]);
+  // Gateway ingress reserves before ACK so deferred preparation cannot reorder sends.
+  const inheritedTicket = params.replyOptions?.[REPLY_ADMISSION_TICKET];
+  const ticket =
+    inheritedTicket ??
+    reserveReplyAdmissionTicket([params.ctx.SessionKey, params.ctx.CommandTargetSessionKey]);
   const ticketedParams = ticket
     ? {
         ...params,
@@ -81,7 +81,10 @@ async function dispatchReplyFromConfigWithQueuePolicy(
       }
     }
   } finally {
-    ticket?.release();
+    // Ingress owns retries until queue handoff or terminal dispatch cleanup.
+    if (!inheritedTicket) {
+      ticket?.release();
+    }
   }
 }
 

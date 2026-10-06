@@ -30,18 +30,22 @@ Runtime behavior:
 - On models that support function tools, Voice Call exposes the built-in `openclaw_end_call` realtime tool. It takes no arguments or call ID; the active voice bridge binds it to the current call.
 - Voice Call exposes the shared `openclaw_agent_consult` realtime tool by default. GPT-Live uses native delegation to the same call-owned agent consult instead. The realtime model can delegate when the caller asks for deeper reasoning, current information, or normal OpenClaw tools.
 - `realtime.consultPolicy` optionally adds guidance for when the realtime model should call `openclaw_agent_consult`.
-- `realtime.agentContext.enabled` is default-off. When enabled, Voice Call injects a bounded agent identity and selected workspace-file capsule into the realtime provider instructions at session setup.
+- `realtime.idleHangupMs` optionally ends an active call after neither side has produced speech for the configured positive number of milliseconds. The timer pauses while an agent consult is running and is disabled when unset.
+- On hosts with the shared context resolver, Voice Call always tells the realtime model that it speaks for an OpenClaw agent that may have other sessions and work. `realtime.agentContext.enabled` is default-off and controls the additional configured identity and profile-file context. Supported older hosts retain the [legacy context behavior](/plugins/voice-call/realtime-and-streaming#agent-voice-context).
 - `realtime.fastContext.enabled` is default-off. When enabled, Voice Call first searches indexed memory/session context for the consult question and returns authorized snippets to the realtime model within `realtime.fastContext.timeoutMs` before falling back to the full consult agent only if `realtime.fastContext.fallbackToConsult` is true. The active memory plugin authorizes session-transcript hits; plugins without that capability fail closed for session hits while ordinary memory hits remain available.
 - If `realtime.provider` points at an unregistered provider, or no realtime voice provider is registered at all, Voice Call logs a warning and skips realtime media instead of failing the whole plugin.
 - `inboundPolicy` must not be `"disabled"` when `realtime.enabled` is true; `validateProviderConfig` rejects that combination.
 - Consult session keys reuse the stored call session when available, then fall back to the configured `sessionScope` (`per-phone` by default, `per-call` for isolated calls, or `main` for the configured agent's main session).
 
-<Warning>
-GPT-Live uses agent delegation instead of native function tools. Its current
-Voice Call bridge cannot invoke `openclaw_end_call` or custom `realtime.tools`.
-Use an OpenAI GA realtime model or Google Gemini Live when the call needs those
-controls; selecting GPT-Live does not make them available through delegation.
-</Warning>
+GPT-Live uses agent delegation instead of native function tools. The delegated
+agent can end only the active call through a call-scoped `voice_call` binding.
+Other `voice_call` actions and custom `realtime.tools` remain unavailable
+through native delegation.
+
+Host speech detection pauses local interruption while an agent consult is in
+flight. Once an active-call helper accepts a hang-up, cancelling the consult
+does not interrupt that control action. The helper still checks that its bound
+call is active before acting.
 
 ### GPT-Live
 
@@ -76,15 +80,17 @@ provider default.
 The bridge converts carrier G.711 mu-law audio at 8 kHz to and from the model's
 24 kHz PCM stream. GPT-Live receives microphone input during playback and owns
 speech interruption; Voice Call does not add local speech-triggered cancellation.
-Initial greetings and `voicecall.speak` requests use the same native session
-context path. Delegated work retains the call's agent, tool policy, and
-cancellation lifetime.
+Outbound initial greetings are pinned as the first verbatim reply in their
+original language. Voice Call waits for the callee's first speech, with a
+3-second fallback for voicemail or silent pickup; inbound greeting timing is
+unchanged. `voicecall.speak` requests use the same native session context path.
+Delegated work retains the call's agent, tool policy, and cancellation lifetime.
 
 GPT-Live rejects `realtime.consultPolicy: "always"`: it owns delegation and
 cannot enforce host-triggered transcript consults. Use `"auto"` or
 `"substantive"` guidance, or choose a model supporting host-controlled turns.
 `realtime.toolPolicy: "none"` disables the agent consult for native delegation
-too. The end-call and custom function-tool limitations above still apply.
+too.
 
 ### Hangup detection
 
@@ -92,6 +98,12 @@ Realtime calls normally end when the carrier sends a stream stop event or closes
 the media WebSocket. If an intermediary does not promptly forward that close,
 OpenClaw treats 30 seconds without inbound media as a disconnect, waits a
 2-second grace period for media to resume, and then ends the call.
+
+Set `realtime.idleHangupMs` to end a connected call after that much speech
+silence. Caller speech, caller transcripts, assistant transcript/audio, and an
+in-flight agent consult reset or pause this timer. Unset leaves this behavior
+disabled. Hold music is not speech, so choose a value that fits the expected
+hold time.
 
 If the realtime provider ends its session first, OpenClaw also ends the carrier
 call, including when the provider reports a normal close. This prevents a silent
@@ -138,12 +150,33 @@ remain errors; ending the phone session suppresses pending consult results.
 
 ### Agent voice context
 
-Enable `realtime.agentContext` when the voice bridge should sound like the
-configured OpenClaw agent without paying a full agent-consult round trip on
-ordinary turns. The context capsule is added once when the realtime session
-is created, so it does not add per-turn latency. Calls to
-`openclaw_agent_consult` still run the full OpenClaw agent and should be used
-for tool work, current information, memory lookups, or workspace state.
+On hosts with the shared context resolver, every realtime session includes an agent-context paragraph explaining that the
+voice model speaks for an OpenClaw agent with multiple sessions. It directs
+questions about other sessions, running work, progress, or priorities to
+OpenClaw. This paragraph stays present when `realtime.agentContext.enabled`
+is `false`.
+
+Enable `realtime.agentContext` to add the configured agent's identity and
+selected profile files for ordinary voice turns. `includeIdentity` controls
+the configured name, emoji, vibe, theme, and creature/persona fields;
+`includeWorkspaceFiles` controls the files listed in `files`. The shared core
+resolver loads `IDENTITY.md`, `USER.md`, and `SOUL.md` through the normal
+bootstrap path, honoring bootstrap hooks and workspace access. Other workspace-relative files use safe workspace reads; missing or
+unreadable files are skipped. `maxChars` bounds the profile-file block, with a
+default of 6000 characters, and excludes the agent-context paragraph and
+configured identity.
+
+OpenClaw 2026.9.6 lacks that shared resolver. On this supported host, Voice Call
+retains its shipped optional context capsule: `enabled: false` omits the capsule;
+when enabled, identity fields and selected safe workspace-relative files follow
+their respective controls. `maxChars` bounds the entire optional capsule,
+including identity, headings, and the truncation marker. The newer multi-session
+paragraph is unavailable on this path. This compatibility path will retire when
+the supported host floor includes the shared context resolver.
+
+Context is added when the realtime session is created, so it does not add per-turn latency.
+Calls to `openclaw_agent_consult` still run the full OpenClaw agent and should
+be used for tool work, current information, memory lookups, or workspace state.
 
 ```json5
 {
